@@ -16,6 +16,28 @@ namespace {
 			return \lmlphp\Lmlphp::getInstance();
 		}
 	}
+
+	function db($config=array()){
+		if($config){
+			$dbconfig = $config;
+		}elseif(isset($GLOBALS['dbconfig'])){
+			$dbconfig = $GLOBALS['dbconfig'];
+		}else{
+			return false;
+		}
+		if (extension_loaded('pdo_mysql') && extension_loaded('PDO')) {
+			return MysqlPdoEnhance::getInstance($dbconfig);
+		}
+		return Mysql::getInstance($dbconfig);
+	}
+
+	function q($a){
+		static $q = array();
+		if(arr_get($q,$a)){
+			return $q[$a];
+		}
+		return $q[$a] = new \lmlphp\ModelQ($a);
+	}
 }
 
 namespace lmlphp{
@@ -901,5 +923,116 @@ class LmlApp{
 }
 
 class LmlException extends \Exception{}
+
+abstract class Model{
+	public $dbconfig;
+	public $db;
+	public $dbPrefix;
+	
+	public $table;
+
+	public function __construct($name){
+		$this->dbconfig = &$GLOBALS[$name ? $name : 'dbconfig'];
+		$this->db = db($this->dbconfig);
+		$this->dbPrefix = $this->dbconfig['dbprefix'];
+		if(property_exists($this, 'table_name')){
+			$this->table = $this->dbPrefix.$this->table_name;
+		}
+	}
+
+	public function getList($offset = 0, $limit = 10){
+		$offset = (int)$offset;
+		$limit = (int)$limit;
+		$sql = "SELECT * FROM {$this->table} order by id desc limit $offset, $limit";
+		return $this->db->query($sql);
+	}
+
+	public function getCount(){
+		$sql = "SELECT COUNT(1) C FROM {$this->table}";
+		$rs = $this->db->getOne($sql);
+		return isset($rs['C']) ? $rs['C'] : 0;
+	}
+	
+	public function add($arr){
+		return $this->db->insert($this->table, $arr);
+	}
+	
+	public function update($arr, $where='', $params=array()){
+		return $this->db->update($this->table, $arr, $where, $params);
+	}
+	
+	public function find($id){
+		return $this->db->getOne("select * from {$this->table} where id=".(int)$id);
+	}
+
+	public function getAll(){
+		return $this->db->select($this->table);
+	}
+
+	public function del($where='', $params=array()){
+		return $this->db->delete($this->table, $where, $params);
+	}
+
+	public function select($fields='*', $where_tail='', $params=array()){
+		return $this->db->select($this->table, $fields, $where_tail, $params);
+	}
+
+	public function getLastId(){
+		return $this->db->getLastId();
+	}
+
+	public function query($sql, $params=array()){
+		return $this->db->query($sql, $params);
+	}
+	
+	public function getOne($fields, $where_tail='', $params=array()){
+		$rs = $this->db->select($this->table, $fields, $where_tail, $params);
+		return isset($rs[0]) ? $rs[0] : array();
+	}
+}
+
+class ModelQ extends Model{
+
+	public $table_name = '';
+
+	public function __construct($name, $confname=''){
+		$this->table_name = $name;
+		parent::__construct($confname);
+	}
+	
+	public function updateOrAdd($arr, $condition){
+		$wheres = array();
+		if($condition){
+			$condition = (array)$condition;
+			foreach ($condition as $k => $v){
+				$wheres[] = $k.'=?';
+			}
+		}
+		$where = implode(' AND ', $wheres);
+		$params = array_values($condition);
+		$rs = $this->select('COUNT(1) C', $where, $params);
+		if(isset($rs[0]) && arr_get($rs[0], 'C')>0){
+			return $this->update($arr, $where, $params);
+		}
+		return $this->add($arr);
+	}
+	
+	public function isExists($arr){
+		$wheres = array();
+		foreach ($arr as $k => $v) {
+			$wheres[] = $k.'=?';
+		}
+		$rs = $this->getOne('COUNT(1) C', implode(' AND ', $wheres), array_values($arr));
+		if ($rs['C'] > 0){
+			return true;
+		}
+		return false;
+	}
+	
+	public function notExists($arr){
+		return $this->isExists($arr) ? false : true;
+	}
+}
+
 
 }
