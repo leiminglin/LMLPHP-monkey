@@ -16,6 +16,35 @@ namespace {
 			return \lmlphp\Lmlphp::getInstance();
 		}
 	}
+
+	function db($config=array()){
+		if($config){
+			$dbconfig = $config;
+		}elseif(isset($GLOBALS['dbconfig'])){
+			$dbconfig = $GLOBALS['dbconfig'];
+		}else{
+			return false;
+		}
+		if (extension_loaded('pdo_mysql') && extension_loaded('PDO')) {
+			return \lmlphp\MysqlPdoEnhance::getInstance($dbconfig);
+		}
+		return \lmlphp\Mysql::getInstance($dbconfig);
+	}
+
+	function arr_get($arr, $k, $r=''){
+		if($k === '' || !$arr){
+			return $r;
+		}
+		return isset($arr[$k]) ? $arr[$k] : $r;
+	}
+
+	function q($a, $s=''){
+		static $q = array();
+		if(arr_get($q,$s.$a)){
+			return $q[$s.$a];
+		}
+		return $q[$a] = new \lmlphp\ModelQ($a, $s);
+	}
 }
 
 namespace lmlphp{
@@ -901,5 +930,479 @@ class LmlApp{
 }
 
 class LmlException extends \Exception{}
+
+class Mysql{
+
+	private $link;
+	private $resource;
+	private static $instances;
+	public $sqls = array();
+
+	private function __construct($config){
+		if ( !extension_loaded('mysql') ) {
+			throw new LmlDbException('MySQL support not be enabled');
+		}
+		$this->connect($config);
+	}
+
+	public static function getInstance($config){
+		$flag = $config['hostname'] . $config['database'];
+		if (isset(self::$instances[$flag])) {
+			return self::$instances[$flag];
+		}
+		return self::$instances[$flag] = new self($config);
+	}
+
+	public function connect($config='') {
+		if ( !$this->link ) {
+			$host = $config['hostname'].($config['hostport']?":{$config['hostport']}":'');
+			$pconnect = isset($config['persist'])?$config['persist']:0;
+			if($pconnect){
+				$this->link = mysql_pconnect($host, $config['username'], $config['password'],
+					MYSQL_CLIENT_COMPRESS*MYSQL_CLIENT_IGNORE_SPACE*
+						MYSQL_CLIENT_INTERACTIVE*MYSQL_CLIENT_SSL);
+			}else{
+				$this->link = mysql_connect($host, $config['username'], $config['password'], true,
+					MYSQL_CLIENT_COMPRESS*MYSQL_CLIENT_IGNORE_SPACE*
+						MYSQL_CLIENT_INTERACTIVE*MYSQL_CLIENT_SSL);
+			}
+			if ( !$this->link || (!empty($config['database']) &&
+					!mysql_select_db($config['database'], $this->link) ) ) {
+				throw new LmlDbException(mysql_error());
+			}
+			$dbVersion = mysql_get_server_info($this->link);
+			mysql_query("SET NAMES '".$config['charset']."'", $this->link);
+			if($dbVersion >'5.0.1'){
+				mysql_query("SET sql_mode=''",$this->link);
+			}
+		}
+		return $this;
+	}
+
+	public function free() {
+		if( is_resource($this->resource) ){
+			mysql_free_result($this->resource);
+		}
+		$this->resource = null;
+	}
+
+	public function query($str, $params=array()) {
+		if($params){
+			foreach($params as $k=>$v){
+				$v = $this->escapeString($v);
+				if(!is_numeric($v)){
+					$v = "'".$v."'";
+				}
+				if(is_int($k)){
+					$str = preg_replace('/\?/', $v, $str, 1);
+				}else{
+					$str = preg_replace('/:'.$k.'/', $v, $str, 1);
+				}
+			}
+		}
+		if($this->resource){
+			$this->free();
+		}
+		$this->sqls[] = $str;
+		$this->resource = mysql_query($str, $this->link);
+		if( false === $this->resource) {
+			$this->error();
+			return false;
+		}elseif(is_resource($this->resource)) {
+			$this->numRows = mysql_num_rows($this->resource);
+			return $this->getAll();
+		}else{
+			return mysql_affected_rows($this->link);
+		}
+	}
+
+	public function insert($table, $arr){
+		$sql = 'INSERT INTO '.$table;
+		foreach ($arr as $k=>$v){
+			$keys[] = '`'.$k.'`';
+			$vals[] = '\''.$this->escapeString($v).'\'';
+		}
+		$sql .= '('.implode(',', $keys).')';
+		$sql .= 'VALUES('.implode(',', $vals).')';
+		return $this->query($sql);
+	}
+
+	public function update($table, $arr, $where='', $params=array()){
+		$sql = 'UPDATE '.$table.' SET ';
+		foreach ($arr as $k=>$v){
+			$sql .= '`'.$k.'` = \''.$this->escapeString($v).'\',';
+		}
+		$sql = rtrim($sql, ',');
+		if($where){
+			$sql .= ' WHERE '.$where;
+		}
+		return $this->query($sql, $params);
+	}
+
+	public function delete($table, $where='', $params=array()){
+		$sql = 'DELETE FROM '.$table;
+		if($where){
+			$sql .= ' WHERE '.$where;
+		}
+		return $this->query($sql, $params);
+	}
+
+	public function select($table, $fields='*', $where_tail='', $params=array()){
+		$sql = 'SELECT '.$fields.' FROM '.$table;
+		if($where_tail){
+			$sql .= ' WHERE '.$where_tail;
+		}
+		return $this->query($sql, $params);
+	}
+
+	public function getOne($str, $params=array()){
+		$rs = $this->query($str, $params);
+		return isset($rs[0])?$rs[0]:array();
+	}
+
+	public function getLastId(){
+		return mysql_insert_id($this->link);
+	}
+
+	public function execute($str) {
+		if ( $this->resource ) {
+			$this->free();
+		}
+		$this->sqls[] = $str;
+		$result = mysql_query($str, $this->link) ;
+		if ( false === $result) {
+			$this->error();
+			return false;
+		} else {
+			return mysql_affected_rows($this->link);
+		}
+	}
+
+	public function startTrans() {
+		mysql_query('START TRANSACTION', $this->link);
+		return ;
+	}
+
+	public function commit() {
+		$result = mysql_query('COMMIT', $this->link);
+		if(!$result){
+			$this->error();
+		}
+		return true;
+	}
+
+	public function rollback() {
+		$result = mysql_query('ROLLBACK', $this->link);
+		if(!$result){
+			$this->error();
+			return false;
+		}
+		return true;
+	}
+
+	private function getAll() {
+		$result = array();
+		while( true==( is_resource($this->resource) &&
+				$row=mysql_fetch_assoc($this->resource)) ){
+			$result[] = $row;
+		}
+		if(!empty($result)){
+			mysql_data_seek($this->resource, 0);
+		}
+		return $result;
+	}
+
+	public function escapeString($str) {
+		if($this->link) {
+			return mysql_real_escape_string($str,$this->link);
+		}else{
+			return mysql_escape_string($str);
+		}
+	}
+
+	public function close() {
+		if ($this->link){
+			mysql_close($this->link);
+		}
+		$this->link = null;
+	}
+
+	private function error(){
+		throw new LmlDbException(mysql_error($this->link));
+	}
+
+	public function getLastSql(){
+		return end($this->sqls);
+	}
+	
+	public function getSqls(){
+		return $this->sqls;
+	}
+}
+
+class LmlDbException extends LmlException{}
+
+interface MysqlPdoInterface{
+
+	public static function getInstance($config);
+
+	public function query($sql, $params = array());
+
+	public function getOne($sql, $params = array());
+
+	public function getLastId();
+
+	public function insert($table, $arrData);
+
+	public function update($table, $arrData, $where = '', $wparams=array());
+
+	public function delete($table, $where='', $params=array());
+
+	public function select($table, $fields='*', $where_tail='', $params=array());
+}
+
+class MysqlPdoEnhance implements MysqlPdoInterface
+{
+	private static $config;
+	private static $instances;
+	private $db;
+	public $sqls = array();
+
+	private function __construct() {
+		$dsn = 'mysql:host='.self::$config['hostname'].';dbname='.self::$config['database'].';port='.self::$config['hostport'];
+		$username = self::$config['username'];
+		$password = self::$config['password'];
+		$options = array(
+			\PDO::MYSQL_ATTR_INIT_COMMAND => 'SET NAMES utf8',
+		);
+
+		$this->db = new \PDO($dsn, $username, $password, $options);
+		if ($this->db->getAttribute(\PDO::ATTR_DRIVER_NAME) != 'mysql') {
+			die("MySQL support not be enabled");
+		}
+
+		// fix sometimes no database selected
+		$this->db->exec("USE ".self::$config['database']);
+	}
+
+	public static function getInstance($config){
+		self::$config = $config;
+		$flag = $config['hostname'] . $config['database'];
+		if (isset(self::$instances[$flag]) && self::$instances[$flag] instanceof self){
+			return self::$instances[$flag];
+		}
+		return self::$instances[$flag] = new self();
+	}
+
+	public function query($sql, $params = array()){
+		$stmt = $this->db->prepare(trim($sql), array(\PDO::MYSQL_ATTR_USE_BUFFERED_QUERY => true));
+
+		if($params){
+			foreach ($params as $k => $v){
+				if(is_int($k)){
+					$k++;
+				}
+				if(is_array($v)){
+					$value = $v['value'];
+					$type = isset($v['type']) ? $v['type'] : false;
+					$length = isset($v['length']) ? $v['length'] : false;
+					if($type && $length){
+						$stmt->bindValue($k, $value, $type, $length);
+					}elseif($type){
+						$stmt->bindValue($k, $value, $type);
+					}else{
+						$stmt->bindValue($k, $value);
+					}
+				}else{
+					$stmt->bindValue($k, $v);
+				}
+			}
+		}
+
+		$stmt->execute();
+		if($stmt->errorCode() != '00000'){
+			throw new LmlDbException(implode("\n", $stmt->errorInfo()));
+		}
+		$this->sqls[] = array($sql, $params);
+		if(preg_match('/^update|^insert|^replace|^delete/i', $sql)){
+			return $stmt->rowCount();
+		}else{
+			return $stmt->fetchAll(\PDO::FETCH_ASSOC);
+		}
+	}
+
+	public function getOne($sql, $params = array()){
+		$rs = $this->query($sql, $params);
+		return isset($rs[0]) ? $rs[0] : array();
+	}
+
+	public function getLastId(){
+		return $this->db->lastInsertId();
+	}
+
+	public function insert($table, $data){
+		$keys = '';
+		$place_values = '';
+		$params = array();
+		foreach ($data as $k => $v){
+			$keys .= '`'.$k.'`,';
+			$place_values .= ":".$k.",";
+			$params[':'.$k] = $v;
+		}
+		$keys = rtrim($keys, ',');
+		$place_values = rtrim($place_values, ',');
+		$sql = "INSERT INTO $table ($keys) VALUES ($place_values)";
+		return $this->query($sql, $params);
+	}
+
+	public function update($table, $data, $where = '', $wparams=array()){
+		$sql = 'UPDATE '.$table.' SET ';
+		$params = array();
+		foreach ($data as $k=>$v){
+			$sql .= '`'.$k.'`=:'.$k.',';
+			$params[':'.$k] = $v;
+		}
+		$sql = rtrim($sql, ',');
+		if($where){
+			$sql .= ' WHERE '.$where;
+		}
+		return $this->query($sql, array_merge($params, $wparams));
+	}
+
+	public function delete($table, $where='', $params=array()){
+		$sql = 'DELETE FROM '.$table;
+		if($where){
+			$sql .= ' WHERE '.$where;
+		}
+		return $this->query($sql, $params);
+	}
+
+	public function select($table, $fields='*', $where_tail='', $params=array()){
+		$sql = 'SELECT '.$fields.' FROM '.$table;
+		if($where_tail){
+			$sql .= ' WHERE '.$where_tail;
+		}
+		return $this->query($sql, $params);
+	}
+	
+	public function getLastSql(){
+		return end($this->sqls);
+	}
+	
+	public function getSqls(){
+		return $this->sqls;
+	}
+}
+
+abstract class Model{
+	public $dbconfig;
+	public $db;
+	public $dbPrefix;
+	
+	public $table;
+
+	public function __construct($name){
+		$this->dbconfig = &$GLOBALS['dbconfig'][$name ? $name : 'dbconfig'];
+		$this->db = db($this->dbconfig);
+		$this->dbPrefix = $this->dbconfig['dbprefix'];
+		if(property_exists($this, 'table_name')){
+			$this->table = $this->dbPrefix.$this->table_name;
+		}
+	}
+
+	public function getList($offset = 0, $limit = 10){
+		$offset = (int)$offset;
+		$limit = (int)$limit;
+		$sql = "SELECT * FROM {$this->table} order by id desc limit $offset, $limit";
+		return $this->db->query($sql);
+	}
+
+	public function getCount(){
+		$sql = "SELECT COUNT(1) C FROM {$this->table}";
+		$rs = $this->db->getOne($sql);
+		return isset($rs['C']) ? $rs['C'] : 0;
+	}
+	
+	public function add($arr){
+		return $this->db->insert($this->table, $arr);
+	}
+	
+	public function update($arr, $where='', $params=array()){
+		return $this->db->update($this->table, $arr, $where, $params);
+	}
+	
+	public function find($id){
+		return $this->db->getOne("select * from {$this->table} where id=".(int)$id);
+	}
+
+	public function getAll(){
+		return $this->db->select($this->table);
+	}
+
+	public function del($where='', $params=array()){
+		return $this->db->delete($this->table, $where, $params);
+	}
+
+	public function select($fields='*', $where_tail='', $params=array()){
+		return $this->db->select($this->table, $fields, $where_tail, $params);
+	}
+
+	public function getLastId(){
+		return $this->db->getLastId();
+	}
+
+	public function query($sql, $params=array()){
+		return $this->db->query($sql, $params);
+	}
+	
+	public function getOne($fields, $where_tail='', $params=array()){
+		$rs = $this->db->select($this->table, $fields, $where_tail, $params);
+		return isset($rs[0]) ? $rs[0] : array();
+	}
+}
+
+class ModelQ extends Model{
+
+	public $table_name = '';
+
+	public function __construct($name, $confname=''){
+		$this->table_name = $name;
+		parent::__construct($confname);
+	}
+	
+	public function updateOrAdd($arr, $condition){
+		$wheres = array();
+		if($condition){
+			$condition = (array)$condition;
+			foreach ($condition as $k => $v){
+				$wheres[] = $k.'=?';
+			}
+		}
+		$where = implode(' AND ', $wheres);
+		$params = array_values($condition);
+		$rs = $this->select('COUNT(1) C', $where, $params);
+		if(isset($rs[0]) && arr_get($rs[0], 'C')>0){
+			return $this->update($arr, $where, $params);
+		}
+		return $this->add($arr);
+	}
+	
+	public function isExists($arr){
+		$wheres = array();
+		foreach ($arr as $k => $v) {
+			$wheres[] = $k.'=?';
+		}
+		$rs = $this->getOne('COUNT(1) C', implode(' AND ', $wheres), array_values($arr));
+		if ($rs['C'] > 0){
+			return true;
+		}
+		return false;
+	}
+	
+	public function notExists($arr){
+		return $this->isExists($arr) ? false : true;
+	}
+}
+
 
 }
