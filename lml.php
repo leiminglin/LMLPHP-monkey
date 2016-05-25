@@ -31,12 +31,19 @@ namespace {
 		return \lmlphp\Mysql::getInstance($dbconfig);
 	}
 
-	function q($a){
-		static $q = array();
-		if(arr_get($q,$a)){
-			return $q[$a];
+	function arr_get($arr, $k, $r=''){
+		if($k === '' || !$arr){
+			return $r;
 		}
-		return $q[$a] = new \lmlphp\ModelQ($a);
+		return isset($arr[$k]) ? $arr[$k] : $r;
+	}
+
+	function q($a, $s=''){
+		static $q = array();
+		if(arr_get($q,$s.$a)){
+			return $q[$s.$a];
+		}
+		return $q[$a] = new \lmlphp\ModelQ($a, $s);
 	}
 }
 
@@ -1162,16 +1169,20 @@ class MysqlPdoEnhance implements MysqlPdoInterface
 	public $sqls = array();
 
 	private function __construct() {
-		$dsn = 'mysql:host='.self::$config['hostname'].';port='.self::$config['hostport'].';dbname='.self::$config['database'];
+		$dsn = 'mysql:host='.self::$config['hostname'].';dbname='.self::$config['database'].';port='.self::$config['hostport'];
 		$username = self::$config['username'];
 		$password = self::$config['password'];
 		$options = array(
-			PDO::MYSQL_ATTR_INIT_COMMAND => 'SET NAMES utf8',
+			\PDO::MYSQL_ATTR_INIT_COMMAND => 'SET NAMES utf8',
 		);
-		$this->db = new PDO($dsn, $username, $password, $options);
-		if ($this->db->getAttribute(PDO::ATTR_DRIVER_NAME) != 'mysql') {
+
+		$this->db = new \PDO($dsn, $username, $password, $options);
+		if ($this->db->getAttribute(\PDO::ATTR_DRIVER_NAME) != 'mysql') {
 			die("MySQL support not be enabled");
 		}
+
+		// fix sometimes no database selected
+		$this->db->exec("USE ".self::$config['database']);
 	}
 
 	public static function getInstance($config){
@@ -1184,7 +1195,7 @@ class MysqlPdoEnhance implements MysqlPdoInterface
 	}
 
 	public function query($sql, $params = array()){
-		$stmt = $this->db->prepare(trim($sql), array(PDO::MYSQL_ATTR_USE_BUFFERED_QUERY => true));
+		$stmt = $this->db->prepare(trim($sql), array(\PDO::MYSQL_ATTR_USE_BUFFERED_QUERY => true));
 
 		if($params){
 			foreach ($params as $k => $v){
@@ -1209,11 +1220,14 @@ class MysqlPdoEnhance implements MysqlPdoInterface
 		}
 
 		$stmt->execute();
+		if($stmt->errorCode() != '00000'){
+			throw new LmlDbException(implode("\n", $stmt->errorInfo()));
+		}
 		$this->sqls[] = array($sql, $params);
 		if(preg_match('/^update|^insert|^replace|^delete/i', $sql)){
 			return $stmt->rowCount();
 		}else{
-			return $stmt->fetchAll(PDO::FETCH_ASSOC);
+			return $stmt->fetchAll(\PDO::FETCH_ASSOC);
 		}
 	}
 
@@ -1288,7 +1302,7 @@ abstract class Model{
 	public $table;
 
 	public function __construct($name){
-		$this->dbconfig = &$GLOBALS[$name ? $name : 'dbconfig'];
+		$this->dbconfig = &$GLOBALS['dbconfig'][$name ? $name : 'dbconfig'];
 		$this->db = db($this->dbconfig);
 		$this->dbPrefix = $this->dbconfig['dbprefix'];
 		if(property_exists($this, 'table_name')){
