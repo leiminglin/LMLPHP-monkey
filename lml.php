@@ -309,7 +309,23 @@ class Lmlphp {
 					case T_LOGICAL_XOR:
 						$refine_str .= '^';
 						break;
-						
+					case T_NAMESPACE:
+						$refine_str .= $tokens[$i][1];
+						for($x=$i+1; $x<$j; $x++){
+							if(is_array($tokens[$x])){
+								if(trim($tokens[$x][1]) == ''){
+									continue;
+								}else{
+									$refine_str .= ' ';
+									break;
+								}
+							}elseif(is_string($tokens[$x])){
+								if(trim($tokens[$x]) == '{'){
+									break;
+								}
+							}
+						}
+						break;
 					case T_EXTENDS:
 					case T_AS:
 					case T_INSTANCEOF:
@@ -338,7 +354,7 @@ class Lmlphp {
 						$refine_str .= $tokens[$i][1];
 						for($x=$i+1; $x<$j; $x++){
 							if(is_array($tokens[$x]) && trim($tokens[$x][1]) != ''){
-								if( substr($tokens[$x][1], 0, 1) != '$' ){
+								if(substr($tokens[$x][1], 0, 1) != '$'){
 									$refine_str .= ' ';
 								}
 								break;
