@@ -1267,7 +1267,7 @@ class MysqlPdoEnhance implements MysqlPdoInterface
 		}
 		$keys = rtrim($keys, ',');
 		$place_values = rtrim($place_values, ',');
-		$sql = "INSERT INTO $table ($keys) VALUES ($place_values)";
+		$sql = 'INSERT INTO '."$table ($keys) VALUES ($place_values)";
 		return $this->query($sql, $params);
 	}
 
