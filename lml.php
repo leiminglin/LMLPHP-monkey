@@ -953,6 +953,7 @@ class Mysql{
 	private $resource;
 	private static $instances;
 	public $sqls = array();
+	public $debug = false;
 
 	private function __construct($config){
 		if ( !extension_loaded('mysql') ) {
@@ -1009,6 +1010,8 @@ class Mysql{
 				if(!is_numeric($v)){
 					$v = "'".$v."'";
 				}
+				$v = str_replace('\\', '\\\\', $v);
+				$v = str_replace('$', '\$', $v);
 				if(is_int($k)){
 					$str = preg_replace('/\?/', $v, $str, 1);
 				}else{
@@ -1019,7 +1022,9 @@ class Mysql{
 		if($this->resource){
 			$this->free();
 		}
-		$this->sqls[] = $str;
+		if($this->debug){
+			$this->sqls[] = $str;
+		}
 		$this->resource = mysql_query($str, $this->link);
 		if( false === $this->resource) {
 			$this->error();
@@ -1084,7 +1089,9 @@ class Mysql{
 		if ( $this->resource ) {
 			$this->free();
 		}
-		$this->sqls[] = $str;
+		if($this->debug){
+			$this->sqls[] = $str;
+		}
 		$result = mysql_query($str, $this->link) ;
 		if ( false === $result) {
 			$this->error();
@@ -1183,6 +1190,7 @@ class MysqlPdoEnhance implements MysqlPdoInterface
 	private static $instances;
 	private $db;
 	public $sqls = array();
+	public $debug = false;
 
 	private function __construct() {
 		$dsn = 'mysql:host='.self::$config['hostname'].';dbname='.self::$config['database'].';port='.self::$config['hostport'];
@@ -1239,7 +1247,9 @@ class MysqlPdoEnhance implements MysqlPdoInterface
 		if($stmt->errorCode() != '00000'){
 			throw new LmlDbException(implode("\n", $stmt->errorInfo()));
 		}
-		$this->sqls[] = array($sql, $params);
+		if ($this->debug) {
+			$this->sqls[] = array($sql, $params);
+		}
 		if(preg_match('/^update|^insert|^replace|^delete/i', $sql)){
 			return $stmt->rowCount();
 		}else{
